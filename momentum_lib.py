@@ -8,24 +8,19 @@ should be executed from the notebooks that import this module.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
-from numpy.typing import ArrayLike
+import yfinance as yf
 
-try:
-    from dotenv import load_dotenv
-except ImportError as e:  # pragma: no cover - handled in notebooks
-    raise RuntimeError(
-        "python-dotenv is required. Install dependencies via `pip install -r requirements.txt`."
-    ) from e
+from dotenv import load_dotenv
 
 
 DEFAULT_DATA_DIR = Path("data")
-DEFAULT_FEATURE_FILE = DEFAULT_DATA_DIR / "uprx_dataset.parquet"
+DEFAULT_PRICES_FILE = DEFAULT_DATA_DIR / "prices.parquet"
+DEFAULT_FEATURE_FILE = DEFAULT_DATA_DIR / "features.parquet"
 
 
 def bootstrap_env(dotenv_path: Path = Path(".env")) -> None:
@@ -34,83 +29,64 @@ def bootstrap_env(dotenv_path: Path = Path(".env")) -> None:
         load_dotenv(dotenv_path)
 
 
-@dataclass
-class AlpacaDataClient:
-    api: "tradeapi.REST"
-    symbols: Tuple[str, str] = ("UPRO", "SPXU")
-
-    def fetch_minutes(
-        self,
-        days: int = 60,
-        tz: str = "America/New_York",
-        cache_file: Path = DEFAULT_DATA_DIR / "minute_bars.parquet",
-        force: bool = False,
-    ) -> pd.DataFrame:
-        """
-        Download minute bars for the configured symbols.
-        Data is cached so notebooks can reuse the same frame instantly.
-        """
-        if cache_file.exists() and not force:
-            return pd.read_parquet(cache_file)
-
-        import alpaca_trade_api as tradeapi  # local import for speed
-
-        if not isinstance(self.api, tradeapi.REST):
-            raise TypeError("api must be an instance of tradeapi.REST")
-
-        end = pd.Timestamp.now(tz=tz)
-        start = end - pd.Timedelta(days=days)
-        data_frames = []
-        for sym in self.symbols:
-            bars = self.api.get_bars(
-                sym,
-                timeframe="1Min",
-                start=start.isoformat(),
-                end=end.isoformat(),
-                limit=10_000,
-            ).df
-            bars = bars.tz_convert(tz).reset_index()
-            bars["symbol"] = sym
-            data_frames.append(bars)
-
-        df = pd.concat(data_frames, ignore_index=True)
-        df = df.rename(columns={"timestamp": "ts"})
-        df.to_parquet(cache_file, index=False)
-        return df
-
-
-def pivot_ohlc(raw: pd.DataFrame) -> pd.DataFrame:
+def load_prices(
+    symbols: Tuple[str, str] = ("UPRO", "SPXU"),
+    period: str = "30d",
+    interval: str = "5m",
+    cache_file: Path = DEFAULT_PRICES_FILE,
+    force: bool = False,
+) -> pd.DataFrame:
     """
-    Convert a stacked Alpaca frame to a multi-column pivoted frame indexed by timestamp.
+    Download recent prices via yfinance and cache them.
     """
-    wide = (
-        raw.pivot_table(index="ts", columns="symbol", values="close")
-        .dropna()
-        .sort_index()
+    DEFAULT_DATA_DIR.mkdir(exist_ok=True)
+    if cache_file.exists() and not force:
+        return pd.read_parquet(cache_file)
+
+    data = yf.download(
+        " ".join(symbols),
+        period=period,
+        interval=interval,
+        group_by="ticker",
+        progress=False,
+        prepost=False,
     )
-    wide.columns = pd.Index([str(c).upper() for c in wide.columns], name="symbol")
-    return wide
+    if isinstance(data.columns, pd.MultiIndex):
+        cols = {}
+        for sym in symbols:
+            cols[sym] = data[sym]["Close"]
+        prices = pd.concat(cols, axis=1)
+    else:
+        prices = data["Close"].to_frame(symbols[0])
+    prices = prices.dropna().sort_index()
+    prices.index = prices.index.tz_localize("UTC").tz_convert("America/New_York")
+    prices = prices.rename(columns=str.upper)
+    prices.to_parquet(cache_file)
+    return prices
+
+
+def validate_prices(prices: pd.DataFrame) -> pd.DataFrame:
+    prices = prices[~prices.index.duplicated()].sort_index()
+    prices = prices.dropna(how="any")
+    return prices
 
 
 def compute_features(
     price_df: pd.DataFrame, window_short: int = 5, window_long: int = 20
 ) -> pd.DataFrame:
-    """
-    Derive a feature panel suitable for ML modeling.
-    """
-    feats = price_df.copy()
-    for sym in feats.columns:
-        close = feats[sym]
-        feats[(sym, "ret_1")] = close.pct_change()
-        feats[(sym, "ema_short")] = close.ewm(span=window_short, adjust=False).mean()
-        feats[(sym, "ema_long")] = close.ewm(span=window_long, adjust=False).mean()
-        feats[(sym, "ema_ratio")] = feats[(sym, "ema_short")] / feats[(sym, "ema_long")]
-        feats[(sym, "vol_10")] = close.pct_change().rolling(10).std(ddof=0)
-        feats[(sym, "rsi_14")] = _rsi(close, period=14)
-    feats = feats.drop(columns=list(feats.columns[: len(price_df.columns)]))
-    feats = feats.dropna()
-    feats.columns = pd.Index([f"{sym}_{feat}" for sym, feat in feats.columns])
-    return feats
+    feats = {}
+    for sym in price_df.columns:
+        close = price_df[sym]
+        feats[f"{sym}_ret_1"] = close.pct_change()
+        feats[f"{sym}_ema_short"] = close.ewm(span=window_short, adjust=False).mean()
+        feats[f"{sym}_ema_long"] = close.ewm(span=window_long, adjust=False).mean()
+        feats[f"{sym}_ema_ratio"] = (
+            feats[f"{sym}_ema_short"] / feats[f"{sym}_ema_long"]
+        )
+        feats[f"{sym}_vol_10"] = close.pct_change().rolling(10).std(ddof=0)
+        feats[f"{sym}_rsi_14"] = _rsi(close, period=14)
+    frame = pd.DataFrame(feats).dropna()
+    return frame
 
 
 def label_future_returns(price_df: pd.DataFrame, horizon: int = 5) -> pd.Series:
@@ -125,10 +101,6 @@ def label_future_returns(price_df: pd.DataFrame, horizon: int = 5) -> pd.Series:
 
 
 def train_model(X: pd.DataFrame, y: pd.Series):
-    """
-    Train a simple but strong gradient boosting model.
-    Returns a tuple of (sklearn Pipeline, feature_importances DataFrame).
-    """
     from sklearn.compose import ColumnTransformer
     from sklearn.impute import SimpleImputer
     from sklearn.metrics import classification_report
@@ -228,8 +200,8 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 __all__ = [
     "bootstrap_env",
-    "AlpacaDataClient",
-    "pivot_ohlc",
+    "load_prices",
+    "validate_prices",
     "compute_features",
     "label_future_returns",
     "train_model",
