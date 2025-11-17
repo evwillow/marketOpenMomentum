@@ -1,0 +1,11 @@
+python-dotenv
+alpaca-trade-api
+pandas
+numpy
+scikit-learn
+xgboost
+matplotlib
+plotly
+pyarrow
+joblib
+
