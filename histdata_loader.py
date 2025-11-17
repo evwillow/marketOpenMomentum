@@ -264,8 +264,16 @@ def load_prices_by_year(data_dir: Path, start_year: Optional[int] = None, end_ye
             index_col="timestamp",
             engine="c",  # Use C engine for faster parsing
         )
+        # Ensure index is DatetimeIndex (sometimes parse_dates doesn't work correctly)
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        # Ensure timezone is set to America/New_York
         if df.index.tz is None:
+            # If no timezone, assume UTC and convert
             df.index = df.index.tz_localize("UTC").tz_convert("America/New_York")
+        else:
+            # If timezone exists, convert to America/New_York
+            df.index = df.index.tz_convert("America/New_York")
         frames.append(df)
     
     if not frames:
