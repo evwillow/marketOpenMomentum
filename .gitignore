@@ -1,2 +1,12 @@
 .env
-
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.vscode/
+.DS_Store
+data/*.parquet
+data/*.joblib
+data/*.csv
+data/*.json
+*.log

@@ -9,6 +9,6 @@ plotly
 pyarrow
 joblib
 seaborn
-yfinance
+yahooquery
 pytest
 

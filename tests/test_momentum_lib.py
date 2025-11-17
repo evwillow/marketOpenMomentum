@@ -1,9 +1,15 @@
+from pathlib import Path
+import sys
+
 import pandas as pd
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from momentum_lib import compute_features, backtest_signals, generate_signals
 
 
 def synthetic_data():
-    idx = pd.date_range("2024-01-01", periods=120, freq="T")
+    idx = pd.date_range("2024-01-01", periods=120, freq="min")
     prices = pd.DataFrame(
         {
             "UPRO": 100 + (idx.hour * 0.1),

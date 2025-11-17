@@ -13,7 +13,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
+from yahooquery import Ticker
 
 from dotenv import load_dotenv
 
@@ -43,24 +43,19 @@ def load_prices(
     if cache_file.exists() and not force:
         return pd.read_parquet(cache_file)
 
-    data = yf.download(
-        " ".join(symbols),
-        period=period,
-        interval=interval,
-        group_by="ticker",
-        progress=False,
-        prepost=False,
-    )
-    if isinstance(data.columns, pd.MultiIndex):
-        cols = {}
-        for sym in symbols:
-            cols[sym] = data[sym]["Close"]
-        prices = pd.concat(cols, axis=1)
-    else:
-        prices = data["Close"].to_frame(symbols[0])
-    prices = prices.dropna().sort_index()
-    prices.index = prices.index.tz_localize("UTC").tz_convert("America/New_York")
-    prices = prices.rename(columns=str.upper)
+    tk = Ticker(" ".join(symbols))
+    hist = tk.history(period=period, interval=interval)
+    if hist.empty:
+        raise RuntimeError("No historical data returned from Yahoo Finance.")
+    if isinstance(hist.index, pd.MultiIndex):
+        hist = hist.reset_index()
+    hist = hist.rename(columns={"date": "ts", "symbol": "Symbol", "close": "close"})
+    pivot = hist.pivot(index="ts", columns="Symbol", values="close")
+    pivot.columns = [c.upper() for c in pivot.columns]
+    prices = pivot.dropna().sort_index()
+    if prices.index.tzinfo is None:
+        prices.index = prices.index.tz_localize("UTC")
+    prices.index = prices.index.tz_convert("America/New_York")
     prices.to_parquet(cache_file)
     return prices
 
@@ -165,14 +160,13 @@ def backtest_signals(
     cash: float = 100_000.0,
     trading_cost_bps: float = 1.0,
 ) -> pd.DataFrame:
-    """
-    Vectorized long-short backtest with friction.
-    """
     aligned_prices = price_df.loc[signals.index]
-    returns = aligned_prices["UPRO"].pct_change().fillna(0) - aligned_prices["SPXU"].pct_change().fillna(0)
-    strat_returns = returns * signals.shift().fillna(0)
+    base_ret = aligned_prices["UPRO"].pct_change().fillna(0) - aligned_prices[
+        "SPXU"
+    ].pct_change().fillna(0)
+    strat_returns = base_ret * signals.shift().fillna(0)
     costs = np.abs(signals.diff().fillna(0)) * (trading_cost_bps / 10_000)
-    strat_returns -= costs
+    strat_returns = strat_returns - costs
     equity = (1 + strat_returns).cumprod() * cash
     stats = _performance_stats(strat_returns)
     out = pd.DataFrame({"equity": equity, "strategy_return": strat_returns})
@@ -181,13 +175,28 @@ def backtest_signals(
 
 
 def _performance_stats(returns: pd.Series) -> Dict[str, float]:
-    ann_factor = 252 * 6.5 * 60  # assume minute data
+    periods = len(returns)
+    if periods == 0:
+        return {"sharpe": 0.0, "cagr": 0.0, "max_drawdown": 0.0}
+    freq_minutes = _infer_minutes(returns.index)
+    ann_periods = int((252 * 6.5 * 60) / freq_minutes)
     mean = returns.mean()
     std = returns.std(ddof=0)
-    sharpe = (mean * ann_factor) / (std * np.sqrt(ann_factor)) if std > 0 else 0.0
-    cagr = (1 + returns).prod() ** (ann_factor / len(returns)) - 1
-    max_drawdown = ((1 + returns).cumprod().cummax() - (1 + returns).cumprod()).max()
-    return {"sharpe": sharpe, "cagr": cagr, "max_drawdown": -max_drawdown}
+    sharpe = (mean * ann_periods) / (std * np.sqrt(ann_periods)) if std > 0 else 0.0
+    cagr = (1 + returns).prod() ** (ann_periods / periods) - 1
+    curve = (1 + returns).cumprod()
+    max_drawdown = ((curve.cummax() - curve) / curve.cummax()).max()
+    return {"sharpe": sharpe, "cagr": cagr, "max_drawdown": -float(max_drawdown)}
+
+
+def _infer_minutes(index: pd.Index) -> int:
+    if not isinstance(index, pd.DatetimeIndex) or index.size < 2:
+        return 1
+    deltas = index.to_series().diff().dropna()
+    if deltas.empty:
+        return 1
+    median_delta = deltas.median().total_seconds() / 60
+    return max(1, int(round(median_delta)))
 
 
 def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
