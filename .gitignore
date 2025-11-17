@@ -3,16 +3,21 @@
 .env.local
 
 # Data and cache directories
-data/
-*.csv
+# Exclude large data files (they can be regenerated)
+# Year-based price files (prices_YYYY.csv) are excluded
+data/prices_*.csv
+data/features.csv
+data/histdata_cache/
+data/*.zip
+# Model file is small enough (~0.5MB) - can be included or regenerated
+# Uncomment to exclude model files:
+# data/*.joblib
 *.parquet
 *.h5
 *.hdf5
-*.joblib
 *.pkl
 *.pickle
 *.model
-histdata_cache/
 *.cache
 
 # Python
