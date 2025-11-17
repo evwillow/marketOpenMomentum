@@ -1,5 +1,5 @@
 """
-Shared utilities for the UPRO/SPXU momentum research workflow.
+Shared utilities for the SPX minute momentum research workflow.
 
 The functions here are intentionally lightweight so the notebooks load fast.
 All expensive work (data downloads, feature generation, model training, backtests)
@@ -9,55 +9,23 @@ should be executed from the notebooks that import this module.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 
 import numpy as np
 import pandas as pd
-from yahooquery import Ticker
 
 from dotenv import load_dotenv
 
 
 DEFAULT_DATA_DIR = Path("data")
-DEFAULT_PRICES_FILE = DEFAULT_DATA_DIR / "prices.parquet"
-DEFAULT_FEATURE_FILE = DEFAULT_DATA_DIR / "features.parquet"
+DEFAULT_PRICES_FILE = DEFAULT_DATA_DIR / "prices.csv"
+DEFAULT_FEATURE_FILE = DEFAULT_DATA_DIR / "features.csv"
 
 
 def bootstrap_env(dotenv_path: Path = Path(".env")) -> None:
     """Load environment variables once at startup."""
     if dotenv_path.exists():
         load_dotenv(dotenv_path)
-
-
-def load_prices(
-    symbols: Tuple[str, str] = ("UPRO", "SPXU"),
-    period: str = "30d",
-    interval: str = "5m",
-    cache_file: Path = DEFAULT_PRICES_FILE,
-    force: bool = False,
-) -> pd.DataFrame:
-    """
-    Download recent prices via yfinance and cache them.
-    """
-    DEFAULT_DATA_DIR.mkdir(exist_ok=True)
-    if cache_file.exists() and not force:
-        return pd.read_parquet(cache_file)
-
-    tk = Ticker(" ".join(symbols))
-    hist = tk.history(period=period, interval=interval)
-    if hist.empty:
-        raise RuntimeError("No historical data returned from Yahoo Finance.")
-    if isinstance(hist.index, pd.MultiIndex):
-        hist = hist.reset_index()
-    hist = hist.rename(columns={"date": "ts", "symbol": "Symbol", "close": "close"})
-    pivot = hist.pivot(index="ts", columns="Symbol", values="close")
-    pivot.columns = [c.upper() for c in pivot.columns]
-    prices = pivot.dropna().sort_index()
-    if prices.index.tzinfo is None:
-        prices.index = prices.index.tz_localize("UTC")
-    prices.index = prices.index.tz_convert("America/New_York")
-    prices.to_parquet(cache_file)
-    return prices
 
 
 def validate_prices(prices: pd.DataFrame) -> pd.DataFrame:
@@ -86,13 +54,12 @@ def compute_features(
 
 def label_future_returns(price_df: pd.DataFrame, horizon: int = 5) -> pd.Series:
     """
-    Create a classification target: +1 if UPRO outperforms SPXU over the horizon, else 0.
+    Create a binary label indicating whether the forward return is positive.
     """
-    upro = price_df["UPRO"].pct_change(periods=horizon)
-    spxu = price_df["SPXU"].pct_change(periods=horizon)
-    spread = upro - spxu
-    labels = (spread > 0).astype(int)
-    return labels.loc[labels.index.intersection(price_df.index)]
+    first_col = price_df.columns[0]
+    forward_ret = price_df[first_col].pct_change(periods=horizon)
+    labels = (forward_ret > 0).astype(int)
+    return labels.dropna()
 
 
 def train_model(X: pd.DataFrame, y: pd.Series):
@@ -161,9 +128,8 @@ def backtest_signals(
     trading_cost_bps: float = 1.0,
 ) -> pd.DataFrame:
     aligned_prices = price_df.loc[signals.index]
-    base_ret = aligned_prices["UPRO"].pct_change().fillna(0) - aligned_prices[
-        "SPXU"
-    ].pct_change().fillna(0)
+    first_col = aligned_prices.columns[0]
+    base_ret = aligned_prices[first_col].pct_change().fillna(0)
     strat_returns = base_ret * signals.shift().fillna(0)
     costs = np.abs(signals.diff().fillna(0)) * (trading_cost_bps / 10_000)
     strat_returns = strat_returns - costs
@@ -209,7 +175,6 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 __all__ = [
     "bootstrap_env",
-    "load_prices",
     "validate_prices",
     "compute_features",
     "label_future_returns",

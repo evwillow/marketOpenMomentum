@@ -10,20 +10,14 @@ from momentum_lib import compute_features, backtest_signals, generate_signals
 
 def synthetic_data():
     idx = pd.date_range("2024-01-01", periods=120, freq="min")
-    prices = pd.DataFrame(
-        {
-            "UPRO": 100 + (idx.hour * 0.1),
-            "SPXU": 20 + (idx.hour * 0.05),
-        },
-        index=idx,
-    )
+    prices = pd.DataFrame({"SPX": 4000 + (idx.hour * 0.5)}, index=idx)
     return prices
 
 
 def test_compute_features_shape():
     feats = compute_features(synthetic_data())
     assert not feats.empty
-    assert "UPRO_ret_1" in feats.columns
+    assert "SPX_ret_1" in feats.columns
 
 
 def test_backtest_runs():

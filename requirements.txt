@@ -6,9 +6,8 @@ scikit-learn
 xgboost
 matplotlib
 plotly
-pyarrow
 joblib
 seaborn
-yahooquery
 pytest
+histdata
 
