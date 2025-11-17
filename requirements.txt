@@ -8,4 +8,7 @@ matplotlib
 plotly
 pyarrow
 joblib
+seaborn
+yfinance
+pytest
 
