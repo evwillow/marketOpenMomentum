@@ -13,11 +13,17 @@ This module implements the complete duel strategy including:
 
 from __future__ import annotations
 
+import os
+import sys
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Literal, Optional
+
+# Prevent __pycache__ creation
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+sys.dont_write_bytecode = True
 
 import numpy as np
 import pandas as pd

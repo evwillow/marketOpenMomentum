@@ -7,9 +7,14 @@ This script finds all .ipynb files in the notebooks/ directory,
 executes them, and exports them as PDF files to the notebook_pdfs/ directory.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+# Prevent __pycache__ creation
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+sys.dont_write_bytecode = True
 
 # Set UTF-8 encoding for Windows console
 if sys.platform == "win32":
@@ -18,21 +23,26 @@ if sys.platform == "win32":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 
-def export_notebook_to_pdf(notebook_path: Path, output_dir: Path) -> bool:
+def export_notebook_to_pdf(notebook_path: Path, output_dir: Path, timeout: int = 300) -> bool:
     """
     Export a single notebook to PDF using jupyter nbconvert.
     
     Args:
         notebook_path: Path to the .ipynb file
         output_dir: Directory where PDF should be saved
+        timeout: Maximum time in seconds to wait for conversion
         
     Returns:
         True if successful, False otherwise
     """
     try:
-        print(f"Converting {notebook_path.name}...")
+        print(f"Converting {notebook_path.name}...", end=" ", flush=True)
         
-        # Use webpdf exporter which works better on Windows
+        # Use webpdf exporter which works better on Windows and is faster
+        # Add --no-input to hide code cells if needed, but keep for now
+        env = os.environ.copy()
+        env['PYTHONDONTWRITEBYTECODE'] = '1'
+        
         result = subprocess.run(
             [
                 "jupyter",
@@ -40,12 +50,17 @@ def export_notebook_to_pdf(notebook_path: Path, output_dir: Path) -> bool:
                 "--to",
                 "webpdf",
                 "--execute",
+                "--ExecutePreprocessor.timeout=300",
+                "--ExecutePreprocessor.kernel_name=python3",
+                "--ExecutePreprocessor.allow_errors=True",
                 str(notebook_path),
                 "--output-dir",
                 str(output_dir),
             ],
             capture_output=True,
             text=True,
+            timeout=timeout,
+            env=env,
         )
         
         if result.returncode == 0:
@@ -56,16 +71,27 @@ def export_notebook_to_pdf(notebook_path: Path, output_dir: Path) -> bool:
             
             if double_pdf.exists():
                 double_pdf.rename(correct_pdf)
-                print(f"  [OK] Created {pdf_name}")
+            elif (output_dir / pdf_name).exists():
+                # Already correct name
+                pass
             else:
-                print(f"  [OK] Created {pdf_name}")
+                # Try to find the PDF file
+                pdf_files = list(output_dir.glob(f"{notebook_path.stem}*.pdf"))
+                if pdf_files:
+                    pdf_files[0].rename(correct_pdf)
+            
+            print(f"[OK]")
             return True
         else:
-            print(f"  [FAILED] {result.stderr}")
+            error_msg = result.stderr[:200] if result.stderr else "Unknown error"
+            print(f"[FAILED] {error_msg}")
             return False
             
+    except subprocess.TimeoutExpired:
+        print(f"[TIMEOUT] Exceeded {timeout}s")
+        return False
     except Exception as e:
-        print(f"  [ERROR] {e}")
+        print(f"[ERROR] {str(e)[:100]}")
         return False
 
 

@@ -45,7 +45,7 @@ SPXU_LEVERAGE = -3.0  # 3x short SPX
 # ============================================================================
 
 # Historical data range
-START_YEAR = 2021  # Begin backtest from 2021
+START_YEAR = 2010  # Begin backtest from 2010
 END_YEAR = None    # None = current year
 
 # Market hours (Eastern Time)

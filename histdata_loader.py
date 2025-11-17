@@ -1,14 +1,24 @@
 """
 Utilities for downloading and converting HistData.com SPX/USD minute bars.
+
+Data is downloaded as ZIP files temporarily, then extracted and saved as CSV files (prices_YYYY.csv).
+ZIP files are kept in histdata_cache/ for faster re-downloads, but final data is always CSV.
 """
 
 from __future__ import annotations
 
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 from tempfile import TemporaryDirectory
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
+
+# Prevent __pycache__ creation
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+sys.dont_write_bytecode = True
 
 import pandas as pd
 
@@ -18,17 +28,60 @@ PAIR = "spxusd"
 PAIR_LABEL = "SPX"
 
 
+def _download_single_year(
+    year: int,
+    target_dir: Path,
+    verbose: bool = True,
+) -> Optional[Path]:
+    """Download a single year of data. Helper for parallel downloads."""
+    zip_name = f"DAT_ASCII_{PAIR.upper()}_M1_{year}.zip"
+    target_path = target_dir / zip_name
+
+    if target_path.exists():
+        return target_path
+
+    try:
+        filename = download_hist_data(
+            year=str(year),
+            month=None,
+            pair=PAIR,
+            time_frame="M1",
+            platform="ASCII",
+            output_directory=str(target_dir),
+            verbose=False,
+        )
+        if filename:
+            file_path = Path(filename)
+            if file_path.exists():
+                return file_path
+            elif target_path.exists():
+                return target_path
+    except Exception as e:
+        if verbose:
+            print(f"Warning: Failed to download {year}: {e}")
+    return None
+
+
 def download_spx_histdata(
     target_dir: Path,
     start_year: int = 2000,
     end_year: Optional[int] = None,
     verbose: bool = True,
+    max_workers: int = 4,
 ) -> list[Path]:
     """
     Download zipped HistData files for SPX/USD 1-minute data covering the
     requested year range.
 
     Note: Downloads complete years. For current year, downloads up to the current month.
+    Uses parallel downloads for faster performance.
+    
+    Args:
+        target_dir: Directory to save downloaded zip files
+        start_year: First year to download
+        end_year: Last year to download (defaults to current year)
+        verbose: Show progress messages
+        max_workers: Number of parallel download threads (default: 4)
     """
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -39,52 +92,48 @@ def download_spx_histdata(
 
     years = list(range(start_year, end_year + 1))
     total = len(years)
-
-    for idx, year in enumerate(years, start=1):
-        # For past years, download the entire year (month=None)
-        # For current year, we'll handle it differently if needed
-        is_current_year = (year == now.year)
-
-        # Use the expected filename format from histdata library
+    
+    # Filter out years that already exist
+    years_to_download = []
+    for year in years:
         zip_name = f"DAT_ASCII_{PAIR.upper()}_M1_{year}.zip"
         target_path = target_dir / zip_name
-
-        if target_path.exists():
+        if not target_path.exists():
+            years_to_download.append(year)
+        else:
+            downloaded.append(target_path)
             if verbose:
-                print(f"[{idx:04d}/{total:04d}] Skipping {year} (already downloaded)")
-            continue
+                print(f"Skipping {year} (already downloaded)")
 
+    if not years_to_download:
         if verbose:
-            pct = (idx / total) * 100
-            print(
-                f"[{idx:04d}/{total:04d}] {pct:5.1f}% Downloading {PAIR.upper()} {year}",
-                flush=True,
-            )
+            print(f"All {total} years already downloaded")
+        return downloaded
 
-        try:
-            # For past years: month=None downloads the entire year
-            # For current year: month=None should work too (gets partial year)
-            filename = download_hist_data(
-                year=str(year),
-                month=None,
-                pair=PAIR,
-                time_frame="M1",
-                platform="ASCII",
-                output_directory=str(target_dir),
-                verbose=False,  # Suppress per-file verbose output
-            )
-            if filename:
-                # The library returns a path string, convert to Path and ensure it exists
-                file_path = Path(filename)
-                if file_path.exists():
-                    downloaded.append(file_path)
-                elif target_path.exists():
-                    # Fallback: check if file exists at expected location
-                    downloaded.append(target_path)
-        except Exception as e:
-            if verbose:
-                print(f"Warning: Failed to download {year}: {e}")
-            continue
+    if verbose:
+        print(f"Downloading {len(years_to_download)} years in parallel (max {max_workers} workers)...")
+
+    # Download in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_year = {
+            executor.submit(_download_single_year, year, target_dir, verbose): year
+            for year in years_to_download
+        }
+        
+        completed = 0
+        for future in as_completed(future_to_year):
+            year = future_to_year[future]
+            completed += 1
+            try:
+                result = future.result()
+                if result:
+                    downloaded.append(result)
+                    if verbose:
+                        pct = (completed / len(years_to_download)) * 100
+                        print(f"[{completed}/{len(years_to_download)}] {pct:5.1f}% Downloaded {year}")
+            except Exception as e:
+                if verbose:
+                    print(f"Error downloading {year}: {e}")
 
     return downloaded
 
@@ -141,6 +190,7 @@ def build_prices_from_histdata(
                         header=None,
                         names=["timestamp", "open", "high", "low", "close", "volume"],
                         dtype={"timestamp": str},
+                        engine="c",  # Use C engine for faster parsing
                     )
                     df["ts"] = pd.to_datetime(df["timestamp"], format="%Y%m%d %H%M%S")
                     df = df[["ts", "close"]]
@@ -208,7 +258,12 @@ def load_prices_by_year(data_dir: Path, start_year: Optional[int] = None, end_ye
         if end_year and year > end_year:
             continue
         
-        df = pd.read_csv(year_file, parse_dates=["timestamp"], index_col="timestamp")
+        df = pd.read_csv(
+            year_file,
+            parse_dates=["timestamp"],
+            index_col="timestamp",
+            engine="c",  # Use C engine for faster parsing
+        )
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC").tz_convert("America/New_York")
         frames.append(df)
