@@ -273,9 +273,11 @@ def load_prices_by_year(data_dir: Path, start_year: Optional[int] = None, end_ye
         )
         # Ensure index is DatetimeIndex (sometimes parse_dates doesn't work correctly)
         if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
+            # Check if index contains timezone-aware datetimes
+            # If so, convert using utc=True to avoid errors
+            df.index = pd.to_datetime(df.index, utc=True).tz_convert("America/New_York")
         # Ensure timezone is set to America/New_York
-        if df.index.tz is None:
+        elif df.index.tz is None:
             # If no timezone, assume UTC and convert
             df.index = df.index.tz_localize("UTC").tz_convert("America/New_York")
         else:
@@ -289,7 +291,11 @@ def load_prices_by_year(data_dir: Path, start_year: Optional[int] = None, end_ye
     # Combine and sort
     prices = pd.concat(frames, axis=0)
     prices = prices[~prices.index.duplicated(keep="first")].sort_index()
-    
+
+    # Rename SPX column to 'close' for consistency with rest of codebase
+    if PAIR_LABEL in prices.columns:
+        prices = prices.rename(columns={PAIR_LABEL: "close"})
+
     return prices
 
 

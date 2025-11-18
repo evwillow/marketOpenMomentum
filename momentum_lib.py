@@ -86,7 +86,7 @@ def simulate_leveraged_etfs(spx_df: pd.DataFrame, config: StrategyConfig = defau
 
     # Get daily returns for SPX
     daily_spx = spx.resample("D").last()
-    daily_ret = daily_spx.pct_change().fillna(0)
+    daily_ret = daily_spx.pct_change(fill_method=None).fillna(0)
 
     # Scale returns by leverage
     upro_daily_ret = daily_ret * config.upro_leverage
