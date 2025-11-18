@@ -475,6 +475,14 @@ def run_backtest(
         "spxu": spxu_df["close"],
     }).dropna()
 
+    # Ensure index is DatetimeIndex
+    if not isinstance(combined.index, pd.DatetimeIndex):
+        combined.index = pd.to_datetime(combined.index, utc=True)
+        if combined.index.tz is not None:
+            combined.index = combined.index.tz_convert("America/New_York")
+        else:
+            combined.index = combined.index.tz_localize("America/New_York")
+
     # Group by date for daily processing
     for date, day_data in combined.groupby(combined.index.date):
         # Get 09:30 bar
