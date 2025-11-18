@@ -32,6 +32,7 @@ def _download_single_year(
     year: int,
     target_dir: Path,
     verbose: bool = True,
+    current_year: Optional[int] = None,
 ) -> Optional[Path]:
     """Download a single year of data. Helper for parallel downloads."""
     zip_name = f"DAT_ASCII_{PAIR.upper()}_M1_{year}.zip"
@@ -41,6 +42,12 @@ def _download_single_year(
         return target_path
 
     try:
+        # For current year, HistData requires month parameter - skip it
+        if current_year and year == current_year:
+            if verbose:
+                print(f"Warning: Skipping {year} (current year requires month parameter)")
+            return None
+            
         filename = download_hist_data(
             year=str(year),
             month=None,
@@ -116,7 +123,7 @@ def download_spx_histdata(
     # Download in parallel
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_year = {
-            executor.submit(_download_single_year, year, target_dir, verbose): year
+            executor.submit(_download_single_year, year, target_dir, verbose, now.year): year
             for year in years_to_download
         }
         
@@ -155,9 +162,9 @@ def build_prices_from_histdata(
     
     zips = sorted(limit_files or raw_dir.glob("*.zip"))
     if not zips:
-        raise FileNotFoundError(
-            f"No HistData zip files found under {raw_dir}. Run download_spx_histdata first."
-        )
+        if verbose:
+            print(f"Warning: No HistData zip files found under {raw_dir}. Skipping build.")
+        return {}
 
     if verbose:
         print(f"Building price data from {len(zips)} zip files...")
@@ -315,11 +322,13 @@ def ensure_histdata_prices(
     output_dir.mkdir(parents=True, exist_ok=True)
     
     now = datetime.now()
-    end_year = end_year or now.year
+    requested_end_year = end_year or now.year
+    # Don't try to download current year (requires month parameter) - use previous year as max
+    effective_end_year = min(requested_end_year, now.year - 1) if requested_end_year >= now.year else requested_end_year
     
     # Check which year files are missing
     missing_years = []
-    for year in range(start_year, end_year + 1):
+    for year in range(start_year, effective_end_year + 1):
         year_file = output_dir / f"prices_{year}.csv"
         if rebuild or not year_file.exists():
             missing_years.append(year)
@@ -345,7 +354,10 @@ def ensure_histdata_prices(
             if verbose:
                 print(f"Using cache directory: {cache_path}")
             download_spx_histdata(cache_path, start_year=min(missing_years), end_year=max(missing_years), verbose=verbose)
-            build_prices_from_histdata(cache_path, output_dir, verbose=verbose)
+            # Only build if we have zip files
+            built_data = build_prices_from_histdata(cache_path, output_dir, verbose=verbose)
+            if not built_data and verbose:
+                print(f"Note: No new data files built. Using existing files if available.")
 
         if verbose:
             print(f"[OK] Price data files saved to {output_dir}")
@@ -353,7 +365,7 @@ def ensure_histdata_prices(
         if verbose:
             print(f"All price files exist in {output_dir}")
     
-    # Load and return combined data
+    # Load and return combined data (use original end_year for loading, not effective_end_year)
     return load_prices_by_year(output_dir, start_year=start_year, end_year=end_year)
 
 
